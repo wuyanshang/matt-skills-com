@@ -1,0 +1,5 @@
+interface:
+  display_name: "Parallel Implement"
+  short_description: "Implement approved tickets in parallel with resumable local worktrees"
+policy:
+  allow_implicit_invocation: false
