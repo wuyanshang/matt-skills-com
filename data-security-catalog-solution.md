@@ -35,6 +35,18 @@
 1. 多个字段批量提交。
 2. 一个字段逐条提交。
 
+此外，必须增加一组历史信息消融实验：
+
+```text
+带历史盘点信息
+不带历史盘点信息
+```
+
+这组对比用于回答两个问题：
+
+1. 历史盘点信息是否真的提高分类准确率。
+2. 历史信息带来的收益是否值得额外的上下文 Token 和潜在的错误继承风险。
+
 ### 2.2 不在当前范围内的内容
 
 当前不做以下事情：
@@ -106,6 +118,19 @@ path_id
 - 被当成真实概率使用。
 
 如果历史结果与当前结果冲突，应记录冲突并提高业务查看优先级。
+
+### 3.4 历史信息必须做有/无对照
+
+“历史盘点信息作为辅助证据”是流程定位；“是否实际提供给模型”是实验变量。两者不能混为一谈。
+
+同一条字段、同一张表、同一批次，应分别运行：
+
+```text
+history_mode = with_history
+history_mode = without_history
+```
+
+除是否传入历史盘点信息外，其他输入和参数必须完全相同。这样才能判断历史信息本身的影响，而不是把提示词、批次或模型随机性造成的差异误认为历史信息收益。
 
 ## 4. 输入数据与标识
 
@@ -260,6 +285,51 @@ path_id
 ```
 
 模型应优先依据当前字段和表语义；历史结果只用于补充方向和发现冲突。
+
+#### 实现要求
+
+历史记录必须先按稳定键关联到当前字段，不能依靠行号或模糊文本临时拼接。建议关联优先级为：
+
+```text
+field_id（如果历史结果已保存该 ID）
+  -> table_id + 源字段英文名
+  -> table_id + 源字段中文名
+  -> 无法唯一匹配时视为无历史信息
+```
+
+关联结果需要标记：
+
+```text
+history_match = matched / unmatched / ambiguous
+```
+
+`ambiguous` 不得强行选择一条历史记录；应视为无可靠历史信息，并记录原因。
+
+历史信息在请求中必须有明确的开关：
+
+```json
+{
+  "history_mode": "with_history",
+  "historical_inventory": {
+    "domain": "客户",
+    "level2": "个人",
+    "level3": "个人基本信息",
+    "asset": "客户联系电话",
+    "confidence": 0.82,
+    "note": "历史模型结果，仅作辅助参考，可能错误"
+  }
+}
+```
+
+当 `history_mode = without_history` 时，请求中不应发送历史字段，也不应发送“没有历史信息”的解释文字，避免无历史组和有历史组的上下文长度及提示语不同。
+
+程序侧应保留历史信息，但不要在发送前覆盖原始数据：
+
+```text
+历史原始值：保留
+历史匹配状态：保留
+发送给模型：按 history_mode 决定
+```
 
 ### 6.4 候选目录召回
 
@@ -483,7 +553,7 @@ path_id 不存在       -> 要求仅从原目录重新选择
 
 先满足敏感数据漏判的安全底线，再尽量提高自动通过比例。
 
-## 7. 两类实验方案
+## 7. 实验方案与历史信息对比
 
 ### 7.1 实验变量
 
@@ -492,6 +562,7 @@ path_id 不存在       -> 要求仅从原目录重新选择
 ```text
 目录提供方式：完整目录 / 候选目录
 字段提交方式：批量 / 逐条
+历史信息方式：带历史盘点 / 不带历史盘点
 ```
 
 其他条件必须一致：
@@ -503,26 +574,93 @@ path_id 不存在       -> 要求仅从原目录重新选择
 安全目录版本
 目录语义补充版本
 整表画像版本
-历史盘点输入
+历史盘点数据集、关联键和匹配规则
 字段顺序
 批次划分
 生成参数
 ```
 
-### 7.2 建议实验组合
-
-至少运行：
+这里的“一致”不是指两组都把历史信息发送给模型，而是指两组使用同一份历史数据、同一套关联键和同一套匹配规则。实验唯一改变的是：
 
 ```text
-A：完整目录 + 字段批量
-B：候选目录 + 字段批量
-C：完整目录 + 字段逐条
-D：候选目录 + 字段逐条
+with_history：将匹配到的历史信息发送给模型
+without_history：不将历史信息发送给模型
+```
+
+### 7.2 建议实验组合
+
+三个变量组合后形成 8 组基础实验：
+
+```text
+1：完整目录 + 字段批量 + 带历史
+2：完整目录 + 字段批量 + 不带历史
+3：候选目录 + 字段批量 + 带历史
+4：候选目录 + 字段批量 + 不带历史
+5：完整目录 + 字段逐条 + 带历史
+6：完整目录 + 字段逐条 + 不带历史
+7：候选目录 + 字段逐条 + 带历史
+8：候选目录 + 字段逐条 + 不带历史
 ```
 
 置信度 AI 在实验阶段对每个组合全量调用，并分别记录置信度 AI 的成本和效果。
 
-### 7.3 重复运行
+如果初期资源有限，可以先做以下最小对照集：
+
+```text
+A：完整目录 + 字段批量 + 带历史
+B：完整目录 + 字段批量 + 不带历史
+C：候选目录 + 字段批量 + 带历史
+D：候选目录 + 字段批量 + 不带历史
+```
+
+这 4 组先回答“历史信息有没有价值”和“候选召回是否省成本”；逐条提交的 4 组随后用于研究提交粒度的影响。
+
+### 7.3 历史信息的专项评价
+
+历史信息不能只比较总准确率，还要做成对差异分析。对同一个 `field_id` 比较带历史和不带历史的结果：
+
+```text
+history_helped：不带历史错误，带历史正确
+history_harmed：不带历史正确，带历史错误
+history_no_effect：两种方式结果相同
+history_changed：两种方式路径不同
+```
+
+重点指标：
+
+```text
+总体最细目录准确率差值
+主题域、二级、三级准确率差值
+敏感漏判率差值
+候选正确路径召回率差值
+历史帮助率 = history_helped / 总字段数
+历史伤害率 = history_harmed / 总字段数
+历史影响率 = history_changed / 总字段数
+历史冲突发现率
+平均输入 Token 增量
+平均单字段成本增量
+```
+
+其中最重要的是：
+
+```text
+历史帮助率必须明显高于历史伤害率；
+敏感数据漏判率不能因为加入历史信息而上升；
+准确率提升必须与增加的 Token 和调用成本相匹配。
+```
+
+还要按历史记录质量分层统计：
+
+```text
+有历史且历史置信度高
+有历史但历史置信度低
+历史与当前字段语义冲突
+无历史记录
+```
+
+不能只给出一个总体平均值，否则看不出历史信息究竟在哪类字段上有帮助、在哪类字段上会误导。
+
+### 7.4 重复运行
 
 每种组合在金标准数据上重复运行 3 次，固定模型、提示词、目录、参数、字段顺序和批次划分。
 
@@ -538,6 +676,96 @@ D：候选目录 + 字段逐条
 平均耗时
 运行结果波动
 ```
+
+### 7.5 实验运行配置
+
+每次实验使用一份不可变运行配置，配置本身也要进入结果记录：
+
+```json
+{
+  "run_id": "exp-20260901-001",
+  "directory_mode": "candidate",
+  "submission_mode": "batch",
+  "history_mode": "with_history",
+  "history_match_policy": "stable_key_only",
+  "model_version": "model-x.y",
+  "classification_prompt_version": "class-v3",
+  "confidence_prompt_version": "conf-v1",
+  "catalog_version": "catalog-v1",
+  "retrieval_rule_version": "retrieval-v2",
+  "table_split_version": "split-v1",
+  "repeat_index": 1
+}
+```
+
+同一组对照实验必须复用相同的：
+
+```text
+table_id 列表
+field_id 列表
+字段顺序
+字段批次边界
+整表画像
+候选召回结果（比较历史信息时固定召回输入）
+生成参数
+```
+
+比较“带历史”和“不带历史”时，候选召回建议先固定为同一结果，避免把“历史影响召回”和“历史影响模型选择”混在一起。完成主实验后，再单独做历史信息对召回阶段的影响分析。
+
+因此历史信息拆成两个实验层次：
+
+```text
+层次一：固定候选集
+  预先生成并冻结候选集，只比较历史信息对分类模型选择的影响。
+
+层次二：端到端召回
+  带历史组和不带历史组分别参与候选召回，比较历史信息是否改变正确路径的召回率。
+```
+
+如果只做一轮主实验，优先采用层次一；否则无法区分“历史帮助模型理解”与“历史改变候选集合”。
+
+### 7.6 批处理实现伪代码
+
+```text
+for table in tables:
+    profile = get_or_create_table_profile(table)
+    fields = table.fields
+
+    for directory_mode in [full, candidate]:
+        for submission_mode in [batch, single]:
+            batches = make_batches(fields, submission_mode)
+
+            for history_mode in [with_history, without_history]:
+                if directory_mode == candidate:
+                    candidates = retrieve_candidates(
+                        table,
+                        fields,
+                        history=history_by_field if history_mode == with_history else None
+                    )
+                else:
+                    candidates = all_paths
+
+                for batch in batches:
+                    request = build_classification_request(
+                        table=table,
+                        profile=profile,
+                        fields=fields,
+                        target_fields=batch,
+                        catalog=all_paths if directory_mode == full else candidates,
+                        history=history_by_field if history_mode == with_history else None,
+                        history_mode=history_mode
+                    )
+                    result = call_classification_model(request)
+                    result = validate_and_retry(result, request)
+                    result = derive_sensitivity(result, catalog)
+                    confidence = call_confidence_model(
+                        request=request,
+                        classification_result=result
+                    )
+                    persist_run_records(result, confidence, run_config)
+```
+
+实现时要确保 `run_config` 在循环内不可被隐式修改；每条结果都带有 `run_id`、`field_id` 和 `history_mode`，这样后续才能进行成对比较。
 
 ## 8. 金标准与评估
 
@@ -685,6 +913,9 @@ path_id
 分类模型原始置信度
 分类模型理由（如有）
 候选路径列表
+历史信息模式：带历史 / 不带历史
+历史记录匹配状态
+历史结果是否影响候选召回
 ```
 
 ### 9.4 置信度 AI 结果
@@ -712,6 +943,11 @@ suggested_path
 重试次数
 处理耗时
 系统处理状态
+run_id
+重复运行序号
+目录提供方式
+字段提交方式
+历史信息方式
 ```
 
 人工审核功能虽然暂缓，但结果表应预留：
@@ -739,6 +975,16 @@ suggested_path
 ```
 
 初期全量调用置信度 AI，是为了积累人工确认数据并校准分数。
+
+历史盘点信息在上线初期建议保留为可切换配置，并持续保留有历史、无历史两种运行结果。只有当调优集和盲测集都显示：
+
+```text
+历史帮助率稳定高于历史伤害率
+敏感漏判率没有上升
+准确率收益足以覆盖额外 Token 成本
+```
+
+才将“带历史”设为默认生产模式；否则继续使用无历史模式，历史结果只留在离线对比中。
 
 ### 10.2 稳定运行后
 
